@@ -11,7 +11,7 @@ Originally, for use in a talk at work.
   nor very clean
 - Handles only addition and multiplication for now
 
-# Good Stuff
+## Good Stuff
 
 - Doesn't use a parser generator
 - Shows how one can load a dictionary of primitives
