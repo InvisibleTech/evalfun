@@ -1,6 +1,6 @@
 ## Purpose
 
-The start of a LISP interpreter having: tokenizer, parser, an AST tree and evaluator. Also and Environment.
+The start of a LISP interpreter having: tokenizer, parser, an AST tree and evaluator. Also an Environment.
 
 Originally, for use in a talk at work.
 
