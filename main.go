@@ -4,13 +4,76 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
-// TODO: parse it up
-func tokenize(code string) []string {
-	return strings.Split(strings.ReplaceAll(strings.ReplaceAll(code, "(", " ) "), ")", " ) "), " ")
+// ===========================
+// Parsing stuff
+// ===========================
+type Tokens []string
+
+func tokenize(chars string) Tokens {
+	splitFn := func(c rune) bool {
+		return c == ' '
+	}
+	replacer := strings.NewReplacer("(", " ( ", ")", " ) ")
+
+	return strings.FieldsFunc(replacer.Replace(chars), splitFn)
 }
+
+func parseAtom(source string) SExp {
+	if floatValue, err := strconv.ParseFloat(source, 64); err == nil {
+		return AtomNumber{
+			numericValue: floatValue,
+		}
+	}
+	return AtomString{
+		lexicalValue: source,
+	}
+}
+
+func parseTokens(tokens Tokens, curr int) (SExp, int) {
+	if len(tokens) == 0 {
+		return Nil{}, 0
+	} else if len(tokens) == 1 {
+		return parseAtom(tokens[0]), 1
+	} else if tokens[curr] == "(" {
+		consumed := 1
+		curr += 1
+		head := &Node{}
+		currHead := head
+		for curr < len(tokens) {
+			if tokens[curr] == "(" {
+				retSexp, retConsumed := parseTokens(tokens, curr)
+				currHead.val = retSexp
+				currHead.next = &Node{}
+				currHead = currHead.next
+				curr += retConsumed
+				consumed += retConsumed
+			} else if tokens[curr] == ")" {
+				curr += 1
+				consumed += 1
+				currHead.val = Nil{}
+				currHead.next = nil
+				return List{head: head}, consumed
+			} else {
+				currHead.val = parseAtom(tokens[curr])
+				currHead.next = &Node{}
+				currHead = currHead.next
+				consumed += 1
+				curr += 1
+			}
+		}
+	}
+
+	// If you got here you fell through
+	panic("Malformed program, unclosed list")
+}
+
+// ===========================
+// Evaluation and AST stuff
+// ===========================
 
 // SExp is the root of the AST
 type SExp interface {
@@ -37,6 +100,8 @@ func evalute(sexp SExp, env *Env) SExp {
 		return sexpt.eval(env)
 	case List:
 		return sexpt.eval(env)
+	case Nil:
+		return sexpt.eval(env)
 	default:
 		log.Printf("unexpected type %T", sexpt)
 		panic("Unknown type being evaluated")
@@ -46,8 +111,8 @@ func evalute(sexp SExp, env *Env) SExp {
 // Nil is the thing that is nothing
 type Nil struct{}
 
-func (nil Nil) eval(env *Env) SExp {
-	return nil
+func (n Nil) eval(env *Env) SExp {
+	return n
 }
 
 // AtomString is the thing for initial values of Atoms in code but then
@@ -88,6 +153,7 @@ func (list List) eval(env *Env) SExp {
 	if list.head == nil {
 		return Nil{}
 	}
+
 	switch headSexpt := list.head.val.eval(env).(type) {
 	case AtomString:
 		if f, ok := env.localBindigs[headSexpt.lexicalValue]; ok {
@@ -111,53 +177,11 @@ func (quoted QuotedSExp) eval(env *Env) SExp {
 	return quoted.sexp
 }
 
-func main() {
-	// (+ 10.5 -1.07)
-	prog1 := List{
-		head: &Node{
-			val: AtomString{
-				lexicalValue: "+",
-			},
-			next: &Node{
-				val: AtomNumber{
-					numericValue: 10.5,
-				},
-				next: &Node{
-					val: AtomNumber{
-						numericValue: -1.07,
-					},
-				},
-			},
-		},
-	}
-	// (* 13 10 10)
-	prog2 := List{
-		head: &Node{
-			val: AtomString{
-				lexicalValue: "*",
-			},
-			next: &Node{
-				val: AtomNumber{
-					numericValue: 13.0,
-				},
-				next: &Node{
-					val: AtomNumber{
-						numericValue: 10,
-					},
-					next: &Node{
-						val: AtomNumber{
-							numericValue: 10,
-						},
-					},
-				},
-			},
-		},
-	}
-
+func defaultEnv() *Env {
 	// Native + operator - instead of some other low level implementation
 	// with the idea being you build up on some basics like this and then
 	// can define pure LISP values and code with set, defun etc.
-	lispEnv := Env{
+	return &Env{
 		localBindigs: map[string]func(*Node, *Env) SExp{
 			"+": func(node *Node, env *Env) SExp {
 				curr := node
@@ -167,8 +191,16 @@ func main() {
 					switch valt := curr.val.(type) {
 					case AtomNumber:
 						accum += valt.numericValue
-					case List:
 					case AtomString:
+						neval := valt.eval(env)
+						switch nevalt := neval.(type) {
+						case AtomNumber:
+							accum += nevalt.numericValue
+						default:
+							log.Printf("Unsupported type %T for multiplcation operator", nevalt)
+							panic("Multiplication of non-numeric values is not supported")
+						}
+					case List:
 						neval := valt.eval(env)
 						switch nevalt := neval.(type) {
 						case AtomNumber:
@@ -177,6 +209,14 @@ func main() {
 							log.Printf("Unsupported type %T for addition operator", nevalt)
 							panic("Addition of non-numeric values is not supported")
 						}
+					case Nil:
+						if curr.next != nil {
+							log.Printf("Malformed SExpression, Nil in middle of List")
+							panic("Malformed SExpression, non-terminal Nil")
+						}
+					default:
+						log.Printf("Unsupported value type %T for addition operator", valt)
+						panic("Addition of unsupported value type")
 					}
 					curr = curr.next
 				}
@@ -194,15 +234,31 @@ func main() {
 					case AtomNumber:
 						accum *= valt.numericValue
 					case List:
+						leval := valt.eval(env)
+						switch levalt := leval.(type) {
+						case AtomNumber:
+							accum *= levalt.numericValue
+						default:
+							log.Printf("Unsupported type %T for multiplcation operator list processing", levalt)
+							panic("Multiplication of non-numeric values is not supported")
+						}
 					case AtomString:
 						neval := valt.eval(env)
 						switch nevalt := neval.(type) {
 						case AtomNumber:
 							accum *= nevalt.numericValue
 						default:
-							log.Printf("Unsupported type %T for addition operator", nevalt)
-							panic("Addition of non-numeric values is not supported")
+							log.Printf("Unsupported type %T for multiplcation operator", nevalt)
+							panic("Multiplication of non-numeric values is not supported")
 						}
+					case Nil:
+						if curr.next != nil {
+							log.Printf("Malformed SExpression, Nil in middle of List")
+							panic("Malformed SExpression, non-terminal Nil")
+						}
+					default:
+						log.Printf("Unsupported value type %T for multiplication operator", valt)
+						panic("Multiplication of unsupported value type")
 					}
 					curr = curr.next
 				}
@@ -213,10 +269,24 @@ func main() {
 			},
 		},
 	}
+}
 
-	result1 := evalute(prog1, &lispEnv)
+func main() {
+	tokes1 := tokenize("(+ 10.5 -1.07)")
+	fmt.Printf("tokes1 == %#v\n", tokes1)
+
+	parsed1, consumed1 := parseTokens(tokes1, 0)
+	fmt.Printf("%d parsed1  == %+v\n", consumed1, parsed1)
+	result1 := evalute(parsed1, defaultEnv())
+
 	fmt.Printf("result1 == %+v\n\ttype: %v\n", result1, reflect.TypeOf(result1))
 
-	result2 := evalute(prog2, &lispEnv)
+	tokes2 := tokenize("(+ 10.5 -1.07 (* 10 (+ -1 1)))")
+	fmt.Printf("tokes2 == %#v\n", tokes2)
+
+	parsed2, consumed2 := parseTokens(tokes2, 0)
+	fmt.Printf("%d parsed2  == %+v\n", consumed2, parsed2)
+	result2 := evalute(parsed2, defaultEnv())
+
 	fmt.Printf("result2 == %+v\n\ttype: %v\n", result2, reflect.TypeOf(result2))
 }
